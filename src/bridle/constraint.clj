@@ -9,49 +9,53 @@
 
 (def constrain-map)
 
-(defn match-not-found [x] (= x :clojure.core.match/not-found))
+(defn key-not-found? [x] (= x :clojure.core.match/not-found))
+(defn key-found? [x] (not= x :clojure.core.match/not-found))
 
-;; constrain a map. You may specify :mandatory and :optional keys.
+;; constrain a map. You may specify :has and :optional keys.
 ;; You may also specify :allow-other-keys (defaults true)
 (defmethod constrain 'constrain-map
   [form]
-  (let [{:keys [mandatory optional types allow-other-keys]
+  (let [{:keys [has optional types allow-other-keys]
          :or {allow-other-keys true}} (apply hash-map (rest form))
          optional (set optional)
          inferred (keys types)
-         mandatory (set/union mandatory
-                              (set/difference (set inferred) optional))
+         has (set (set/union has
+                                   (set/difference (set inferred) optional)))
          map-keys (fn []
                     (into {}
                           (map
                            (fn possibly-guarded [k]
-                             (if-let [t (get types k)]
+                             (let [t (get types k)]
                                (vector
                                 k
                                 (list
-                                 '_ :when
-                                 ;; We would like to add nil? as an alternative
-                                 ;; guard for optional keys. But since the
-                                 ;; functions are passed to :when as symbols
-                                 ;; they can not be comp'd
-                                 (if (optional k)
-                                   (let [t (if (sequential? t) t [t])]
-                                     (vec (map
-                                           (fn [t1]
-                                             `(fn [x#]
-                                                (or (match-not-found x#)
-                                                    (~t1 x#))))
-                                           t)))
-                                   t)))
-                               (vector k '_)))
-                           (concat mandatory optional))))]
+                                 '_
+                                 :when
+                                 (let [t (or t [])
+                                       t (if (sequential? t) t [t])]
+                                   (vec
+                                    (concat
+                                     (if (has k) [`key-found?])
+                                     (map
+                                      (fn [t1]
+                                        (if (optional k)
+                                          `(fn [x#]
+                                             (or (key-not-found? x#)
+                                                 (~t1 x#)))
+                                          t1))
+                                      t))))
+                                 t))))
+                           (concat has optional))))]
     `(fn [data#]
-       (match/match
-        [data#]
-        [~(if allow-other-keys
-            (map-keys)
-            (list (map-keys) :only (vec (concat mandatory optional))))] true
-        [{}] false))))
+       (and
+        (instance? java.util.Map data#)
+        (match/match
+         [data#]
+         [~(if allow-other-keys
+             (map-keys)
+             (list (map-keys) :only (vec (concat has optional))))] true
+         [{}] false)))))
 
 (defmacro constrain-pred-fn
   "Generate a constraint checking function.
@@ -59,9 +63,18 @@
   [form]
   (constrain form))
 
+(defn assert-on-constraint-failed
+  "A constraint-failed-handler that asserts."
+  [constraint-name value]
+    (assert false (format "%s failed: %s" constraint-name value)))
+
+(def ^{:dynamic true :doc "Constraint failure handler"}
+  constraint-failed-handler assert-on-constraint-failed)
+
 (defmacro defconstraint
   "Define a named constraint."
-  [constraint-name]
-  `(defn ~constraint-name [form#]
-     (when-not (constraint-pred-fn form#)
-       (assert false (format "%s failed: %s" ~constraint-name form#)))))
+  [constraint-name form]
+  `(defn ~constraint-name [value#]
+     (let [f# ~(constrain form)]
+       (or (f# value#)
+        (constraint-failed-handler ~constraint-name value#)))))

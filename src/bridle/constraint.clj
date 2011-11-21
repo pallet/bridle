@@ -12,49 +12,49 @@
 (defn key-not-found? [x] (= x :clojure.core.match/not-found))
 (defn key-found? [x] (not= x :clojure.core.match/not-found))
 
-;; constrain a map. You may specify :has and :optional keys.
-;; You may also specify :allow-other-keys (defaults true)
+;; constrain a map. You may specify :has and :allow keys.  any constraints on
+;; component types are specified in a map from key to constraint, passed to
+;; :types
 (defmethod constrain 'constrain-map
   [form]
-  (let [{:keys [has optional types allow-other-keys]
-         :or {allow-other-keys true}} (apply hash-map (rest form))
-         optional (set optional)
-         inferred (keys types)
-         has (set (set/union has
-                                   (set/difference (set inferred) optional)))
-         map-keys (fn []
-                    (into {}
-                          (map
-                           (fn possibly-guarded [k]
-                             (let [t (get types k)]
-                               (vector
-                                k
-                                (list
-                                 '_
-                                 :when
-                                 (let [t (or t [])
-                                       t (if (sequential? t) t [t])]
-                                   (vec
-                                    (concat
-                                     (if (has k) [`key-found?])
-                                     (map
-                                      (fn [t1]
-                                        (if (optional k)
-                                          `(fn [x#]
-                                             (or (key-not-found? x#)
-                                                 (~t1 x#)))
-                                          t1))
-                                      t))))
-                                 t))))
-                           (concat has optional))))]
+  (let [{:keys [has allow types]} (apply hash-map (rest form))
+        allow-specified? allow  ;; allow specification of empty sequence
+        allow (set allow)
+        inferred (keys types)
+        has (set has)
+        map-keys (fn []
+                   (into {}
+                         (map
+                          (fn possibly-guarded [k]
+                            (let [t (get types k)]
+                              (vector
+                               k
+                               (list
+                                '_
+                                :when
+                                (let [t (or t [])
+                                      t (if (sequential? t) t [t])]
+                                  (vec
+                                   (concat
+                                    (if (has k) [`key-found?])
+                                    (map
+                                     (fn [t1]
+                                       (if (has k)
+                                         t1
+                                         `(fn [x#]
+                                            (or (key-not-found? x#)
+                                                (~t1 x#)))))
+                                     t))))
+                                t))))
+                          (distinct (concat has allow (keys types))))))]
     `(fn [data#]
        (and
         (instance? java.util.Map data#)
         (match/match
          [data#]
-         [~(if allow-other-keys
-             (map-keys)
-             (list (map-keys) :only (vec (concat has optional))))] true
+         [~(if allow-specified?
+             (list (map-keys) :only (vec (concat has allow)))
+             (map-keys))] true
          [{}] false)))))
 
 (defmacro constrain-pred-fn
